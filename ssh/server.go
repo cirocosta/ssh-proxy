@@ -16,25 +16,11 @@ import (
 //
 const maxForwards = 2
 
-// defaultSSHConfig is a veeery permissive server configuration that is all
+// defaultSSHServerConfig is a veeery permissive server configuration that is all
 // about letting anyone connect to it.
 //
-var defaultSSHConfig = &ssh.ServerConfig{
-	Config: ssh.Config{
-		Ciphers: nil,
-
-		MACs: []string{
-			"hmac-sha2-256-etm@openssh.com",
-			"hmac-sha2-256",
-		},
-
-		KeyExchanges: []string{
-			"ecdh-sha2-nistp256",
-			"ecdh-sha2-nistp384",
-			"ecdh-sha2-nistp521",
-			"curve25519-sha256@libssh.org",
-		},
-	},
+var defaultSSHServerConfig = &ssh.ServerConfig{
+	Config: defaultSSHConfig,
 
 	NoClientAuth: true,
 }
@@ -47,7 +33,7 @@ type server struct {
 func NewServer(address string) server {
 	return server{
 		address: address,
-		config:  defaultSSHConfig,
+		config:  defaultSSHServerConfig,
 	}
 }
 
@@ -304,7 +290,7 @@ func (server *server) forwardTCPIP(
 			interrupted = true
 			listener.Close()
 		case <-done:
-			logger.Debug("done")
+			log.Debug("done")
 		}
 
 	}()
@@ -316,7 +302,7 @@ func (server *server) forwardTCPIP(
 		localConn, err := listener.Accept()
 		if err != nil {
 			if !interrupted {
-				logger.Error("failed to accept connection", err)
+				log.Error("failed to accept connection", err)
 			}
 
 			break

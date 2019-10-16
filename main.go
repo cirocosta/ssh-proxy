@@ -8,7 +8,7 @@ import (
 )
 
 var cli struct {
-	Serve   serveCommand   `command:"server"`
+	Serve   serveCommand   `command:"serve"`
 	Connect connectCommand `command:"connect"`
 }
 
