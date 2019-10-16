@@ -35,13 +35,13 @@ run_http_server () {
 }
 
 run_ssh_client () {
-	./forwarder connect --addr="localhost:2222" --port="8000" &
+	./ssh-proxy client --addr="localhost:2222" --port="8000" &
 	echo "$!"
 	sleep 3
 }
 
 run_ssh_server () {
-	./forwarder serve --port="1234" &
+	./ssh-proxy server --private-key=./keys/id_rsa --port="1234" &
 	echo "$!"
 	sleep 3
 }
