@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"strings"
 	"sync"
@@ -16,30 +17,30 @@ import (
 //
 const maxForwards = 2
 
-// defaultSSHServerConfig is a veeery permissive server configuration that is all
-// about letting anyone connect to it.
-//
-var defaultSSHServerConfig = &ssh.ServerConfig{
-	Config: defaultSSHConfig,
-
-	NoClientAuth: true,
-}
-
 type server struct {
 	address string
 	config  *ssh.ServerConfig
+	port    uint16
 }
 
-func NewServer(address string) server {
-	return server{
-		address: address,
-		config:  defaultSSHServerConfig,
+func NewServer(address, pkey string, port uint16) (s server, err error) {
+	config, err := sshServerConfig(pkey)
+	if err != nil {
+		err = fmt.Errorf("failed generating ssh server config: %w")
+		return
 	}
+
+	s = server{
+		address: address,
+		config:  config,
+		port:    port,
+	}
+	return
 }
 
 // Server serves an SSH server on a given address.
 //
-func (server *server) Serve() (err error) {
+func (server *server) Start(ctx context.Context) (err error) {
 
 	// listen on a given address
 	//
@@ -61,7 +62,7 @@ func (server *server) Serve() (err error) {
 			continue
 		}
 
-		go server.handshake(c)
+		go server.handshake(ctx, c)
 	}
 }
 
@@ -78,9 +79,32 @@ type ConnState struct {
 	ForwardedTCPIPs <-chan ForwardedTCPIP
 }
 
+func sshServerConfig(filepath string) (cfg *ssh.ServerConfig, err error) {
+	privateBytes, err := ioutil.ReadFile(filepath)
+	if err != nil {
+		err = fmt.Errorf("failed to load private key from %s: %w", err)
+		return
+	}
+
+	signer, err := ssh.ParsePrivateKey(privateBytes)
+	if err != nil {
+		err = fmt.Errorf("failed to parse private key from %s: %w", err)
+		return
+	}
+
+	cfg = &ssh.ServerConfig{
+		Config:       defaultSSHConfig,
+		NoClientAuth: true,
+	}
+
+	cfg.AddHostKey(signer)
+
+	return
+}
+
 // handshake establishes the application-level (SSH) connection.
 //
-func (server *server) handshake(netConn net.Conn) {
+func (server *server) handshake(ctx context.Context, netConn net.Conn) {
 	logger := log.WithFields(log.Fields{
 		"remote": netConn.RemoteAddr().String(),
 	})
@@ -93,7 +117,7 @@ func (server *server) handshake(netConn net.Conn) {
 
 	defer conn.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	forwardedTCPIPs := make(chan ForwardedTCPIP, maxForwards)

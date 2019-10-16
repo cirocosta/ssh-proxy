@@ -8,8 +8,8 @@ import (
 )
 
 var cli struct {
-	Serve   serveCommand   `command:"serve"`
-	Connect connectCommand `command:"connect"`
+	Server serverCommand `command:"server"`
+	Client clientCommand `command:"client"`
 }
 
 func main() {
