@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 
-	"github.com/cirocosta/wireguard-vs-ssh/ssh"
+	"github.com/cirocosta/ssh-proxy/ssh"
 )
 
 type serverCommand struct {

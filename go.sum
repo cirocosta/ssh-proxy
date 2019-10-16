@@ -1,3 +1,5 @@
+github.com/cirocosta/wireguard-vs-ssh v0.0.0-20191016204711-c21af367db4c h1:39+49Ac1TZOTFJJZlzNaKFMYwlKzCCHUjXRXi8s9S4A=
+github.com/cirocosta/wireguard-vs-ssh v0.0.0-20191016204711-c21af367db4c/go.mod h1:YfemUISkc9AJAJ6nrUKUnLXaWid3htRAtk0WulBnzzU=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/jessevdk/go-flags v1.4.0 h1:4IU2WS7AumrZ/40jfhf4QVDMsQwqA7VEHozFRrGARJA=
 github.com/jessevdk/go-flags v1.4.0/go.mod h1:4FA24M0QyGHXBuZZK/XkWh8h0e1EYbRYJSGM75WSRxI=
