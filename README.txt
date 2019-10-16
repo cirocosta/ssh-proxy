@@ -1,105 +1,64 @@
-WHAT
+ssh-proxy
+	
 
-	this is about testing out the performance differences between SSH and
-	Wireguard when it comes to getting traffic through it in terms of:
+	an 80% copy of Concourse's SSH proxying.
 
-	- cost (utilization)
-	- end-user performance (throughput)
 
 
 WHY
 
-	Currently, `concourse` gets its workers registered against the cluster
-	through SSH, regardless of the topology of the cluster.
+	Proxying traffic through SSH is definitely not free, and it turns out
+	that Concourse does that for streaming bits from one worker to another.
 
+	This was created to isolate the proxying part so that we could gather
+	some insights into how costly that is.
 
-			 (ssh)
-		worker ----------.
-				tsa
-		worker ----------*
-			 (ssh)
-	
+	At the same time, this thing is useful on its own for, for instance,
+	getting a HTTP server that sits in your desktop (under a private IP
+	address) exposed to the "wild interwebzz" by having a server (that sits
+	on a public IP) forwarding requests down to your desktop.
 
-	While it's *very* easy to just leverage SSH (being implemented by
-	Concourse on both the client and server side) to have workers
-	registering from anywhere, there might be a compeling reason to allow
-	the case for secure communication without the use of a userspace
-	protocol.
+		- yeah yeah, maybe not all that useful as I didn't implement any
+		  of the key checking for authn hehe
 
 
 
-THE TOOLS
+USAGE
 
-	SSH
-		
-		what's that?
-		how does it work?
-		how Concourse uses it?	
+	1. create a private key
+
+		ssh-keygen -t rsa -f ./id_rsa
 
 
-	WIREGUARD
+	2. on `machine1`, create a server
 
-		what's this thing?
-		how does it work?
-		when did this get possible?
-		what are the next steps in its development?
-		
-
-METODOLOGY
-
-	> how will we know that one is better than the other?
-	> how can we be confident that one is better than the other?
-
-	SCENARIOS
-
-		
-		SSH w/ remote port-forwarding
+		ssh-proxy server \
+			--private-key=./id_rsa \ 
+			--addr=0.0.0.0:2222 \   	# addr to listen for ssh conns
+			--port=1234			# port to use to accept conns to forward
 
 
-			DIRECT COMM
+	3. on `machine2`, create a "client"
+
+		ssh-proxy client \
+			--addr=machine1:2222 \	# addr of the ssh server
+			--port=8000		# port to forward conns to
+			
+
+		python -m "SimpleHTTPServer"	# start a basic http server here
 
 
-			s1				s2
+	4. get requests from the server down to the client
 
-			transmitter -> 1234		receiver	:2222
-			|						 ^
-			|						 |
-			ssh server --------------------------------- ssh client
-			port-forward 1234:2222
+		curl machine1:1234
 
 
-			PROXIED COMM
+LICENSE
+
+	Apache V2 (see ./LICENSE).
+
+	see Concourse's license:
+	- https://github.com/concourse/concourse/blob/2cc847226ee5210d30045b49bac7f4c2350990c8/LICENSE.md
 
 
-		
-			s1		s2		s3
-
-			transmitter     proxy           receiver
-
-
-
-
-		WIREGUARD
-
-
-			s1				s2
-
-			transmitter ------------------> receiver	:2222
-					wireguard tunnel
-
-
-	BASELINE
-
-		1. transmit certain payloads with direct communication (no SSH,
-		   etc).
-
-		2. perform th
-
-		
-	
-
-	in both cases, run the experiments for several payloads, measuring:
-	1. cpu utilization during the period (server and client)
-	2. egress & ingress in the wire
-	3. ram utilized
 
