@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -18,6 +20,12 @@ type client struct {
 	port uint16
 
 	client *ssh.Client
+}
+
+var defaultClientSSHConfig = &ssh.ClientConfig{
+	Config:          defaultSSHConfig,
+	User:            "anything",
+	HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 }
 
 func NewClient(addr string, port uint16) client {
@@ -42,17 +50,61 @@ func (c *client) Start(ctx context.Context) (err error) {
 
 	defer sshClient.Close()
 
-	// do the port-forwarding
+	log.Info("connected")
+
+	err = portForward(ctx, sshClient, c.port)
+	if err != nil {
+		err = fmt.Errorf("failed port-forwarding for %d: %w", c.port, err)
+		return
+	}
 
 	return
 }
 
-var defaultClientSSHConfig = &ssh.ClientConfig{
-	Config: defaultSSHConfig,
-	User:   "anything",
+// portForward asks the server on the other side of the connection to get
+// connections forwarded to a given `port` on our side.
+//
+func portForward(ctx context.Context, client *ssh.Client, port uint16) (err error) {
+	addr := "0.0.0.0:" + strconv.Itoa(int(port))
+
+	listener, err := client.Listen("tcp", addr)
+	if err != nil {
+		err = fmt.Errorf("failed requesting forward for %d: %w", port, err)
+		return
+	}
+
+	defer listener.Close()
+
+	for {
+		remoteConn, err := listener.Accept()
+		if err != nil {
+			return fmt.Errorf("failed accepting: %w", err)
+		}
+
+		err = handleForwardedConn(ctx, remoteConn, addr)
+		if err != nil {
+			return fmt.Errorf("failed handling forwarded conn: %w", err)
+		}
+	}
+
+	return
 }
 
-func connect(ctx context.Context, addr string) (sshClient *ssh.Client, err error) {
+func handleForwardedConn(ctx context.Context, remoteConn net.Conn, addr string) (err error) {
+	defer remoteConn.Close()
+
+	localConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		err = fmt.Errorf("failed to dial local server %s: %w", err)
+		return
+	}
+
+	handleTraffic(ctx, localConn, remoteConn)
+
+	return
+}
+
+func connect(ctx context.Context, addr string) (client *ssh.Client, err error) {
 	dialer := &net.Dialer{}
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
@@ -64,9 +116,10 @@ func connect(ctx context.Context, addr string) (sshClient *ssh.Client, err error
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, defaultClientSSHConfig)
 	if err != nil {
 		err = fmt.Errorf("failed performing SSH handshake against ssh server: %w", err)
+		return
 	}
 
-	sshClient = ssh.NewClient(sshConn, chans, reqs)
+	client = ssh.NewClient(sshConn, chans, reqs)
 
 	return
 }

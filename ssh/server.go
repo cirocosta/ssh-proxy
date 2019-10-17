@@ -3,8 +3,10 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -17,16 +19,68 @@ import (
 //
 const maxForwards = 2
 
-type server struct {
-	address string
-	config  *ssh.ServerConfig
-	port    uint16
-}
+type (
+
+	// server TODO
+	//
+	server struct {
+		address string
+		config  *ssh.ServerConfig
+		port    uint16
+	}
+
+	// tcpipForwardRequest is the request sent by the SSH client to request the
+	// server to start a proxy that is meant to forward requests to a given port.
+	//
+	tcpipForwardRequest struct {
+
+		// BindIP is the IP from the client that we, as the server, should reach
+		// out to.
+		//
+		BindIP string
+
+		// BindPort is the port in the client where we should direct our
+		// requests to when proxying.
+		//
+		BindPort uint32
+	}
+
+	// tcpipForwardResponse represents the response sent back to the client who
+	// asked for port-forwarding.
+	//
+	tcpipForwardResponse struct {
+
+		// BoundPort is the port that was created on the server-side to bind to
+		// the client's port.
+		//
+		BoundPort uint32
+	}
+
+	ForwardedTCPIP struct {
+		BindAddr  string
+		BoundPort uint32
+
+		Drain chan<- struct{}
+
+		wg *sync.WaitGroup
+	}
+
+	ConnState struct {
+		ForwardedTCPIPs <-chan ForwardedTCPIP
+	}
+
+	forwardTCPIPChannelRequest struct {
+		ForwardIP   string
+		ForwardPort uint32
+		OriginIP    string
+		OriginPort  uint32
+	}
+)
 
 func NewServer(address, pkey string, port uint16) (s server, err error) {
 	config, err := sshServerConfig(pkey)
 	if err != nil {
-		err = fmt.Errorf("failed generating ssh server config: %w")
+		err = fmt.Errorf("failed generating ssh server config: %w", err)
 		return
 	}
 
@@ -64,19 +118,6 @@ func (server *server) Start(ctx context.Context) (err error) {
 
 		go server.handshake(ctx, c)
 	}
-}
-
-type ForwardedTCPIP struct {
-	BindAddr  string
-	BoundPort uint32
-
-	Drain chan<- struct{}
-
-	wg *sync.WaitGroup
-}
-
-type ConnState struct {
-	ForwardedTCPIPs <-chan ForwardedTCPIP
 }
 
 func sshServerConfig(filepath string) (cfg *ssh.ServerConfig, err error) {
@@ -120,16 +161,17 @@ func (server *server) handshake(ctx context.Context, netConn net.Conn) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	forwardedTCPIPs := make(chan ForwardedTCPIP, maxForwards)
-	go server.handleGlobalRequests(ctx, conn, reqs, forwardedTCPIPs)
+	var (
+		chansGroup      = new(sync.WaitGroup)
+		forwardedTCPIPs = make(chan ForwardedTCPIP, maxForwards)
+		state           = ConnState{ForwardedTCPIPs: forwardedTCPIPs}
+	)
 
-	state := ConnState{
-		ForwardedTCPIPs: forwardedTCPIPs,
-	}
-
-	chansGroup := new(sync.WaitGroup)
+	go server.handleForwardRequests(ctx, conn, reqs, forwardedTCPIPs)
 
 	for newChannel := range chans {
+		newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
+
 		if newChannel.ChannelType() != "session" {
 			logger.WithFields(log.Fields{
 				"type": newChannel.ChannelType(),
@@ -161,36 +203,9 @@ func (server *server) handleChannel(
 	return
 }
 
-// tcpipForwardRequest is the request sent by the SSH client to request the
-// server to start a proxy that is meant to forward requests to a given port.
+// handleForwardRequests is responsible for handling those
 //
-type tcpipForwardRequest struct {
-
-	// BindIP is the IP from the client that we, as the server, should reach
-	// out to.
-	//
-	BindIP string
-
-	// BindPort is the port in the client where we should direct our
-	// requests to when proxying.
-	//
-	BindPort uint32
-}
-
-// tcpipForwardResponse represents the response sent back to the client who
-// asked for port-forwarding.
-//
-type tcpipForwardResponse struct {
-
-	// BoundPort is the port that was created on the server-side to bind to
-	// the client's port.
-	//
-	BoundPort uint32
-}
-
-// handleGlobalRequests is responsible for handling those
-//
-func (server *server) handleGlobalRequests(
+func (server *server) handleForwardRequests(
 	ctx context.Context,
 	conn *ssh.ServerConn,
 	reqs <-chan *ssh.Request,
@@ -350,13 +365,6 @@ func (server *server) forwardTCPIP(
 	return
 }
 
-type forwardTCPIPChannelRequest struct {
-	ForwardIP   string
-	ForwardPort uint32
-	OriginIP    string
-	OriginPort  uint32
-}
-
 // forwardLocalConn takes care of proxying bytes from the server to the client,
 // and vice-versa.
 //
@@ -373,20 +381,21 @@ func forwardLocalConn(
 ) {
 	defer localConn.Close()
 
-	var req forwardTCPIPChannelRequest
-	req.ForwardIP = forwardIP
-	req.ForwardPort = forwardPort
-
-	host, port, err := net.SplitHostPort(localConn.RemoteAddr().String())
+	host, portStr, err := net.SplitHostPort(localConn.RemoteAddr().String())
 	if err != nil {
 		panic(fmt.Errorf("failed to split host from port for local conn - %w", err))
 	}
 
-	req.OriginIP = host
-
-	_, err = fmt.Sscanf(port, "%d", &req.OriginPort)
+	port, err := strconv.ParseUint(portStr, 10, 32)
 	if err != nil {
-		panic(fmt.Errorf("failed to get port from parsed port - %w", err))
+		panic(fmt.Errorf("failed to convert port to uint32"))
+	}
+
+	req := forwardTCPIPChannelRequest{
+		ForwardIP:   forwardIP,
+		ForwardPort: forwardPort,
+		OriginIP:    host,
+		OriginPort:  uint32(port),
 	}
 
 	channel, reqs, err := conn.OpenChannel("forwarded-tcpip", ssh.Marshal(req))
@@ -394,9 +403,43 @@ func forwardLocalConn(
 		log.Error("failed to open channel", err)
 		return
 	}
-
 	defer channel.Close()
+
 	go ssh.DiscardRequests(reqs)
+	handleTraffic(ctx, localConn, channel)
 
 	return
+}
+
+func handleTraffic(ctx context.Context, a, b io.ReadWriteCloser) {
+	const numPipes = 2
+
+	wait := make(chan struct{}, numPipes)
+	pipe := func(to io.WriteCloser, from io.ReadCloser) {
+		defer to.Close()
+		defer from.Close()
+		defer func() {
+			wait <- struct{}{}
+		}()
+
+		io.Copy(to, from)
+	}
+
+	go pipe(a, b)
+	go pipe(b, a)
+
+	done := 0
+
+dance:
+	for {
+		select {
+		case <-wait:
+			done++
+			if done == numPipes {
+				break dance
+			}
+		case <-ctx.Done():
+			break dance
+		}
+	}
 }
