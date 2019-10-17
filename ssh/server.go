@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,6 +201,7 @@ func (server *server) handleChannel(
 	requests <-chan *ssh.Request,
 	state ConnState,
 ) {
+	debug.PrintStack()
 	return
 }
 
@@ -283,6 +285,8 @@ func (server *server) handleForwardRequests(
 
 			wait.Add(1)
 			go server.forwardTCPIP(ctx, drain, wait, conn, listener, req.BindIP, forPort)
+
+			r.Reply(true, ssh.Marshal(res))
 
 			// bindAddr := net.JoinHostPort(req.BindIP, fmt.Sprintf("%d", req.BindPort))
 
@@ -392,10 +396,10 @@ func forwardLocalConn(
 	}
 
 	req := forwardTCPIPChannelRequest{
-		ForwardIP:   forwardIP,
-		ForwardPort: forwardPort,
-		OriginIP:    host,
-		OriginPort:  uint32(port),
+		ForwardIP:   forwardIP,    // 0.0.0.0
+		ForwardPort: forwardPort,  // 8000
+		OriginIP:    host,         // ::1
+		OriginPort:  uint32(port), // 55000
 	}
 
 	channel, reqs, err := conn.OpenChannel("forwarded-tcpip", ssh.Marshal(req))
