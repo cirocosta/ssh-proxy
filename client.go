@@ -7,12 +7,13 @@ import (
 )
 
 type clientCommand struct {
-	Address string `long:"address" required:"true" description:"address to connect to"`
-	Port    uint16 `long:"port"    required:"true" description:"port to be port-forwarded by the server"`
+	Address    string `long:"addr"        required:"true" description:"address to connect to"`
+	RemotePort uint16 `long:"remote-port" required:"true" description:"port to be port-forwarded by the server"`
+	LocalPort  uint16 `long:"local-port"  required:"true" description:"port to be port-forwarded by the server"`
 }
 
 func (c *clientCommand) Execute(args []string) (err error) {
-	client := ssh.NewClient(c.Address, c.Port)
+	client := ssh.NewClient(c.Address, c.LocalPort, c.RemotePort)
 
 	err = client.Start(context.Background())
 	return

@@ -10,16 +10,32 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// client is an SSH client that connects to an SSH server for the sole purpose
+// of creating a port-forwarding session.
+//
+//
+// 	user
+//        |
+// 	  *---- server:rport
+//               |
+//               *---> client
+//                       |
+//                       *---> application:lport
+//
+//
 type client struct {
-	// addr is the address of the SSH server (including the server's port).
+	// addr is the address of the SSH server (including the server's SSH port).
 	//
-	addr string
+	saddr string
 
-	// port is the local port to be asked to be forwarded by the server.
+	// lport is the port to which this client should create connections to.
 	//
-	port uint16
+	lport uint16
 
-	client *ssh.Client
+	// rport is the remote port from which the server should get connectinos
+	// to to forward to us.
+	//
+	rport uint16
 }
 
 var defaultClientSSHConfig = &ssh.ClientConfig{
@@ -28,11 +44,8 @@ var defaultClientSSHConfig = &ssh.ClientConfig{
 	HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 }
 
-func NewClient(addr string, port uint16) client {
-	return client{
-		addr: addr,
-		port: port,
-	}
+func NewClient(saddr string, lport, rport uint16) client {
+	return client{saddr, lport, rport}
 }
 
 // Start starts a port-forwarding session, letting connections performed against
@@ -42,9 +55,9 @@ func NewClient(addr string, port uint16) client {
 //      explicity cancelled.
 //
 func (c *client) Start(ctx context.Context) (err error) {
-	sshClient, err := connect(ctx, c.addr)
+	sshClient, err := connect(ctx, c.saddr)
 	if err != nil {
-		err = fmt.Errorf("failed to connect to ssh server: %w", err)
+		err = fmt.Errorf("failed to connect to ssh server at %s: %w", c.saddr, err)
 		return
 	}
 
@@ -52,9 +65,9 @@ func (c *client) Start(ctx context.Context) (err error) {
 
 	log.Info("connected")
 
-	err = portForward(ctx, sshClient, c.port)
+	err = c.portForward(ctx, sshClient)
 	if err != nil {
-		err = fmt.Errorf("failed port-forwarding for %d: %w", c.port, err)
+		err = fmt.Errorf("failed port-forwarding: %w", err)
 		return
 	}
 
@@ -64,12 +77,15 @@ func (c *client) Start(ctx context.Context) (err error) {
 // portForward asks the server on the other side of the connection to get
 // connections forwarded to a given `port` on our side.
 //
-func portForward(ctx context.Context, client *ssh.Client, port uint16) (err error) {
-	addr := "0.0.0.0:" + strconv.Itoa(int(port))
+func (c *client) portForward(ctx context.Context, client *ssh.Client) (err error) {
+	var (
+		remoteAddr = "0.0.0.0:" + strconv.Itoa(int(c.rport))
+		localAddr  = "127.0.0.1:" + strconv.Itoa(int(c.lport))
+	)
 
-	listener, err := client.Listen("tcp", addr)
+	listener, err := client.Listen("tcp", remoteAddr)
 	if err != nil {
-		err = fmt.Errorf("failed requesting forward for %d: %w", port, err)
+		err = fmt.Errorf("failed requesting forward for %s: %w", remoteAddr, err)
 		return
 	}
 
@@ -81,7 +97,7 @@ func portForward(ctx context.Context, client *ssh.Client, port uint16) (err erro
 			return fmt.Errorf("failed accepting: %w", err)
 		}
 
-		err = handleForwardedConn(ctx, remoteConn, addr)
+		err = handleForwardedConn(ctx, remoteConn, localAddr)
 		if err != nil {
 			return fmt.Errorf("failed handling forwarded conn: %w", err)
 		}

@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,11 +14,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// maxForwards corresponds to the maximum number of port forwarding requests to
-// be served for a given SSH connection.
-//
-const maxForwards = 2
-
 type (
 
 	// server TODO
@@ -27,7 +21,6 @@ type (
 	server struct {
 		address string
 		config  *ssh.ServerConfig
-		port    uint16
 	}
 
 	// tcpipForwardRequest is the request sent by the SSH client to request the
@@ -57,19 +50,6 @@ type (
 		BoundPort uint32
 	}
 
-	ForwardedTCPIP struct {
-		BindAddr  string
-		BoundPort uint32
-
-		Drain chan<- struct{}
-
-		wg *sync.WaitGroup
-	}
-
-	ConnState struct {
-		ForwardedTCPIPs <-chan ForwardedTCPIP
-	}
-
 	forwardTCPIPChannelRequest struct {
 		ForwardIP   string
 		ForwardPort uint32
@@ -78,7 +58,7 @@ type (
 	}
 )
 
-func NewServer(address, pkey string, port uint16) (s server, err error) {
+func NewServer(address, pkey string) (s server, err error) {
 	config, err := sshServerConfig(pkey)
 	if err != nil {
 		err = fmt.Errorf("failed generating ssh server config: %w", err)
@@ -88,12 +68,11 @@ func NewServer(address, pkey string, port uint16) (s server, err error) {
 	s = server{
 		address: address,
 		config:  config,
-		port:    port,
 	}
 	return
 }
 
-// Server serves an SSH server on a given address.
+// Start serves an SSH server capable of port-forwarding.
 //
 func (server *server) Start(ctx context.Context) (err error) {
 
@@ -105,10 +84,16 @@ func (server *server) Start(ctx context.Context) (err error) {
 		return
 	}
 
+	log.WithFields(log.Fields{
+		"addr": server.address,
+	}).Info("listening")
+
+	var tcpConn net.Conn
+
 	for {
 		// wait for someone to go through the tcp connection flow
 		//
-		c, err := listener.Accept()
+		tcpConn, err = listener.Accept()
 		if err != nil {
 			if !strings.Contains(err.Error(), "use of closed network connection") {
 				log.Error("failed to accept", err)
@@ -117,14 +102,23 @@ func (server *server) Start(ctx context.Context) (err error) {
 			continue
 		}
 
-		go server.handshake(ctx, c)
+		// handle the application-layer (SSH)
+		//
+		err = server.handleSSH(ctx, tcpConn)
+		if err != nil {
+			err = fmt.Errorf("failed during SSH handling: %w", err)
+			return
+		}
 	}
 }
 
+// sshServerConfig creates an SSH server configuration with a private key
+// already loaded.
+//
 func sshServerConfig(filepath string) (cfg *ssh.ServerConfig, err error) {
 	privateBytes, err := ioutil.ReadFile(filepath)
 	if err != nil {
-		err = fmt.Errorf("failed to load private key from %s: %w", err)
+		err = fmt.Errorf("failed to read private key from %s: %w", err)
 		return
 	}
 
@@ -144,16 +138,18 @@ func sshServerConfig(filepath string) (cfg *ssh.ServerConfig, err error) {
 	return
 }
 
-// handshake establishes the application-level (SSH) connection.
+// handleSSH establishes the application-level (SSH) connection.
 //
-func (server *server) handshake(ctx context.Context, netConn net.Conn) {
+func (server *server) handleSSH(ctx context.Context, netConn net.Conn) (err error) {
 	logger := log.WithFields(log.Fields{
 		"remote": netConn.RemoteAddr().String(),
 	})
 
+	logger.Info("handling ssh conn")
+
 	conn, chans, reqs, err := ssh.NewServerConn(netConn, server.config)
 	if err != nil {
-		logger.Info("handshake failed", err)
+		err = fmt.Errorf("handshake failed: %w", err)
 		return
 	}
 
@@ -162,60 +158,28 @@ func (server *server) handshake(ctx context.Context, netConn net.Conn) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var (
-		chansGroup      = new(sync.WaitGroup)
-		forwardedTCPIPs = make(chan ForwardedTCPIP, maxForwards)
-		state           = ConnState{ForwardedTCPIPs: forwardedTCPIPs}
-	)
+	go discardChannels(chans)
 
-	go server.handleForwardRequests(ctx, conn, reqs, forwardedTCPIPs)
-
-	for newChannel := range chans {
-		newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
-
-		if newChannel.ChannelType() != "session" {
-			logger.WithFields(log.Fields{
-				"type": newChannel.ChannelType(),
-			}).Info("rejecting unknown channel type")
-
-			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
-			continue
-		}
-
-		channel, requests, err := newChannel.Accept()
-		if err != nil {
-			logger.Error("failed to accept channel", err)
-			return
-		}
-
-		chansGroup.Add(1)
-		go server.handleChannel(chansGroup, channel, requests, state)
+	err = server.handleSSHRequests(ctx, conn, reqs)
+	if err != nil {
+		err = fmt.Errorf("failed handling forward requests: %w", err)
+		return
 	}
 
-	chansGroup.Wait()
-}
-
-func (server *server) handleChannel(
-	chansGroup *sync.WaitGroup,
-	channel ssh.Channel,
-	requests <-chan *ssh.Request,
-	state ConnState,
-) {
-	debug.PrintStack()
 	return
 }
 
 // handleForwardRequests is responsible for handling those
 //
-func (server *server) handleForwardRequests(
+func (server *server) handleSSHRequests(
 	ctx context.Context,
 	conn *ssh.ServerConn,
 	reqs <-chan *ssh.Request,
-	forwardedTCPIPs chan<- ForwardedTCPIP,
-) {
+) (err error) {
+
 	var (
-		forwardedThings = 0
-		logger          = log.WithFields(log.Fields{
+		forwarded bool
+		logger    = log.WithFields(log.Fields{
 			"remote": conn.RemoteAddr().String(),
 		})
 	)
@@ -227,81 +191,73 @@ func (server *server) handleForwardRequests(
 
 		switch r.Type {
 		case "tcpip-forward":
-
-			// ensure we don't forward too much
-			//
-			forwardedThings++
-			if forwardedThings > maxForwards {
-				logger.Info("rejecting request")
+			if forwarded {
+				logger.Info("rejecting request - already forwarded")
 				r.Reply(false, nil)
 			}
 
-			// parse the request
-			//
-			var req tcpipForwardRequest
-			err := ssh.Unmarshal(r.Payload, &req)
+			listener, err := server.listenOnPortForwarded(ctx, conn, r)
 			if err != nil {
-				logger.Error("failed to unmarshal payload as tcpip forward request", err)
-				r.Reply(false, nil)
-				continue
-			}
-
-			// listen on an ephemeral port
-			//
-			listener, err := net.Listen("tcp", "0.0.0.0:0")
-			if err != nil {
-				logger.Error("failed to listen", err)
+				err = fmt.Errorf("failed to serve port forward req: %w", err)
 				r.Reply(false, nil)
 				continue
 			}
 
 			defer listener.Close()
 
-			// get the port that we (server) bound to
-			//
-			_, port, err := net.SplitHostPort(listener.Addr().String())
-			if err != nil {
-				panic(fmt.Errorf("failed to split addr generated by net pkg - %w", err))
-			}
+			r.Reply(true, ssh.Marshal(tcpipForwardResponse{
+				BoundPort: uint32(1234),
+			}))
 
-			// respond back to the client with the port that we've
-			// bound to.
-			//
-			var res tcpipForwardResponse
-			_, err = fmt.Sscanf(port, "%d", &res.BoundPort)
-			if err != nil {
-				panic(fmt.Errorf("failed to retrieve port from string - %w", err))
-			}
+			forwarded = true
 
-			logger.Debug("listening")
-
-			forPort := req.BindPort
-			if forPort == 0 {
-				forPort = res.BoundPort
-			}
-
-			drain := make(chan struct{})
-			wait := new(sync.WaitGroup)
-
-			wait.Add(1)
-			go server.forwardTCPIP(ctx, drain, wait, conn, listener, req.BindIP, forPort)
-
-			r.Reply(true, ssh.Marshal(res))
-
-			// bindAddr := net.JoinHostPort(req.BindIP, fmt.Sprintf("%d", req.BindPort))
-
-		// aside from keepalives, ignore anything else.
-		//
 		default:
-			if strings.Contains(r.Type, "keepalive") {
-				logger.Debug("keepalive")
-				r.Reply(true, nil)
-			} else {
+			// aside from keepalives, ignore anything else.
+			//
+			if !strings.Contains(r.Type, "keepalive") {
 				logger.Warn("ignoring")
 				r.Reply(false, nil)
+				continue
 			}
+
+			logger.Debug("keepalive")
+			r.Reply(true, nil)
 		}
 	}
+
+	return
+}
+
+func (server *server) listenOnPortForwarded(
+	ctx context.Context,
+	conn *ssh.ServerConn,
+	r *ssh.Request,
+) (listener net.Listener, err error) {
+
+	var (
+		drain = make(chan struct{})
+		wait  = new(sync.WaitGroup)
+		req   tcpipForwardRequest
+	)
+
+	err = ssh.Unmarshal(r.Payload, &req)
+	if err != nil {
+		err = fmt.Errorf("failed to parse payload as tcpip forward req: %w", err)
+		return
+	}
+
+	// listen
+	//
+	listener, err = net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(int(req.BindPort)))
+	if err != nil {
+		err = fmt.Errorf("failed to listen on addr: %w", err)
+		return
+	}
+
+	// start the proxying
+	//
+	wait.Add(1)
+	go server.forwardTCPIP(ctx, drain, wait, conn, listener, req.BindIP, uint16(req.BindPort))
 
 	return
 }
@@ -316,8 +272,9 @@ func (server *server) forwardTCPIP(
 	conn *ssh.ServerConn,
 	listener net.Listener,
 	forwardIP string,
-	forwardPort uint32,
-) {
+	forwardPort uint16,
+) (err error) {
+
 	var (
 		interrupted = false
 		done        = make(chan struct{})
@@ -327,7 +284,6 @@ func (server *server) forwardTCPIP(
 	defer close(done)
 
 	go func() {
-
 		select {
 		case <-drain:
 			interrupted = true
@@ -335,17 +291,19 @@ func (server *server) forwardTCPIP(
 		case <-done:
 			log.Debug("done")
 		}
-
 	}()
+
+	var localConn net.Conn
 
 	for {
 		// take connections from the backlog that we have for that
 		// listener.
 		//
-		localConn, err := listener.Accept()
+		localConn, err = listener.Accept()
 		if err != nil {
 			if !interrupted {
-				log.Error("failed to accept connection", err)
+				err = fmt.Errorf("failed to accept connection", err)
+				return
 			}
 
 			break
@@ -381,7 +339,7 @@ func forwardLocalConn(
 	localConn net.Conn,
 	conn *ssh.ServerConn,
 	forwardIP string,
-	forwardPort uint32,
+	forwardPort uint16,
 ) {
 	defer localConn.Close()
 
@@ -396,10 +354,10 @@ func forwardLocalConn(
 	}
 
 	req := forwardTCPIPChannelRequest{
-		ForwardIP:   forwardIP,    // 0.0.0.0
-		ForwardPort: forwardPort,  // 8000
-		OriginIP:    host,         // ::1
-		OriginPort:  uint32(port), // 55000
+		ForwardIP:   forwardIP,
+		ForwardPort: uint32(forwardPort),
+		OriginIP:    host,
+		OriginPort:  uint32(port),
 	}
 
 	channel, reqs, err := conn.OpenChannel("forwarded-tcpip", ssh.Marshal(req))
@@ -410,6 +368,7 @@ func forwardLocalConn(
 	defer channel.Close()
 
 	go ssh.DiscardRequests(reqs)
+
 	handleTraffic(ctx, localConn, channel)
 
 	return
@@ -445,5 +404,11 @@ dance:
 		case <-ctx.Done():
 			break dance
 		}
+	}
+}
+
+func discardChannels(chans <-chan ssh.NewChannel) {
+	for newChannel := range chans {
+		newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
 	}
 }
