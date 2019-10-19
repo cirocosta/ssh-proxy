@@ -32,20 +32,28 @@ USAGE
 
 	2. on `machine1`, create a server
 
+		# listening on 2222 for SSH connections
+		#
 		ssh-proxy server \
 			--private-key=./id_rsa \ 
-			--addr=0.0.0.0:2222 \   	# addr to listen for ssh conns
-			--port=1234			# port to use to accept conns to forward
+			--addr=0.0.0.0:2222
 
 
 	3. on `machine2`, create a "client"
 
+		# connects to machine1:2222, sending a request for it
+		# to take connections to its 1234 (i.e., `machine1:1234`),
+		# forward them to the client, which is then responsible for
+		# pushing down to a server listening on 8000.
+		#
 		ssh-proxy client \
 			--addr=machine1:2222 \	# addr of the ssh server
-			--port=8000		# port to forward conns to
+			--local-port=8000 \
+			--remote-port=1234
 			
 
 		python -m "SimpleHTTPServer"	# start a basic http server here
+						# that listens on 8000
 
 
 	4. get requests from the server down to the client
@@ -53,10 +61,15 @@ USAGE
 		curl machine1:1234
 
 
+			curl --> server:1234 ---> client ---> application:8000
+
+
 
 SHOULD I USE THIS?
 
 	probably not.
+
+	this is just for an experiment.
 
 
 
