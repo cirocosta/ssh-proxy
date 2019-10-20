@@ -3,19 +3,56 @@ Description=Node Exporter
 
 [Service]
 User=root
-ExecStart=/usr/local/bin/node_exporter --web.listen-address=":9001"
-
-
-[Enable]
-cpu
-loadavg
-meminfo
-netstat
-sockstat
-netdev
-pressure?	 - cpu would be nice
-
-
+ExecStart=/usr/local/bin/node_exporter \
+	--web.listen-address=":9001" \
+	--collector.cpu \
+	--collector.meminfo \
+	--collector.netdev \
+	--no-collector.arp \
+	--no-collector.bcache \
+	--no-collector.bonding \
+	--no-collector.buddyinfo \
+	--no-collector.conntrack \
+	--no-collector.cpufreq \
+	--no-collector.diskstats \
+	--no-collector.drbd \
+	--no-collector.edac \
+	--no-collector.entropy \
+	--no-collector.filefd \
+	--no-collector.filesystem \
+	--no-collector.hwmon \
+	--no-collector.infiniband \
+	--no-collector.interrupts \
+	--no-collector.ipvs \
+	--no-collector.ksmd \
+	--no-collector.loadavg \
+	--no-collector.logind \
+	--no-collector.mdadm \
+	--no-collector.meminfo_numa \
+	--no-collector.mountstats \
+	--no-collector.netclass \
+	--no-collector.netstat \
+	--no-collector.nfs \
+	--no-collector.nfsd \
+	--no-collector.ntp \
+	--no-collector.perf \
+	--no-collector.pressure \
+	--no-collector.processes \
+	--no-collector.qdisc \
+	--no-collector.runit \
+	--no-collector.sockstat \
+	--no-collector.stat \
+	--no-collector.supervisord \
+	--no-collector.systemd \
+	--no-collector.tcpstat \
+	--no-collector.textfile \
+	--no-collector.time \
+	--no-collector.timex \
+	--no-collector.uname \
+	--no-collector.vmstat \
+	--no-collector.wifi \
+	--no-collector.xfs \
+	--no-collector.zfs
 
 [Install]
 WantedBy=multi-user.target

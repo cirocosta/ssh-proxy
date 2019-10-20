@@ -16,7 +16,8 @@ import (
 
 type (
 
-	// server TODO
+	// server is a single-tenant SSH server that is capable of just one
+	// thing: port-forwarding.
 	//
 	server struct {
 		address string
@@ -50,6 +51,8 @@ type (
 		BoundPort uint32
 	}
 
+	// forwardTCPIPChannelRequest TODO
+	//
 	forwardTCPIPChannelRequest struct {
 		ForwardIP   string
 		ForwardPort uint32
@@ -69,6 +72,7 @@ func NewServer(address, pkey string) (s server, err error) {
 		address: address,
 		config:  config,
 	}
+
 	return
 }
 
