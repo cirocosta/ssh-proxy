@@ -7,6 +7,6 @@ scrape_configs:
       - targets: ['instance-1']
         labels:
           instance: 'vm1'
-#     - targets: ['instance-2']
-#       labels:
-#         instance: 'vm2'
+      - targets: ['instance-2']
+        labels:
+          instance: 'vm2'
