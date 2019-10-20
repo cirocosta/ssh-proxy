@@ -233,7 +233,7 @@
       "steppedLine": false,
       "targets": [
         {
-          "expr": "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+          "expr": "1 - (node_memory_MemAvailable_bytes{instance=~\"$instance\"} / node_memory_MemTotal_bytes)",
           "legendFormat": "{{ instance }}",
           "refId": "A"
         }
