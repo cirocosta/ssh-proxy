@@ -15,7 +15,10 @@ install_node_exporter () {
 	tar xvzf ./node_exporter-$NE_VERSION.linux-amd64.tar.gz \
 		node_exporter-$NE_VERSION.linux-amd64/node_exporter \
 		--strip-components=1
-	install -m 0755 ./node_exporter /usr/local/bin
+	sudo install -m 0755 ./node_exporter /usr/local/bin
+	sudo cp ./node_exporter.service /etc/systemd/system/node_exporter.service
+	sudo systemctl daemon-reload
+	sudo service node_exporter start
 }
 
 main "$@"
